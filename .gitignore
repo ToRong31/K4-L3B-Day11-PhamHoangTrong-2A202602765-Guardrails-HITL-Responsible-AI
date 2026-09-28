@@ -207,3 +207,6 @@ marimo/_lsp/
 __marimo__/
 
 template-codelabs
+
+# Local checkpoint for interrupted Checkpoint 3 runs
+outputs/.part3-progress.json*
