@@ -13,6 +13,17 @@ from google.adk import runners
 from google.adk.plugins import base_plugin
 
 from core.utils import chat_with_agent
+from core.tracing import record_decision, trace_span
+
+
+PII_PATTERNS = {
+    "email": r"(?<![\w.+-])[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}(?![\w-])",
+    "api_key": r"\bsk-[A-Za-z0-9-]+\b",
+    "password": r"\bpassword\s*(?::|=|is\b|la\b|là\b)\s*\S+|\badmin123\b",
+    "db_host": r"\bdb\.vinbank\.internal(?::\d+)?\b",
+    "phone": r"(?<!\d)0\d{9,10}(?!\d)",
+    "national_id": r"(?<!\d)(?:\d{12}|\d{9})(?!\d)",
+}
 
 
 # ============================================================
@@ -39,18 +50,8 @@ def content_filter(response: str) -> dict:
     issues = []
     redacted = response
 
-    # PII patterns to check
-    PII_PATTERNS = {
-        # TODO: Add regex patterns for:
-        # - VN phone number: r"0\d{9,10}"
-        # - Email: r"[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}"
-        # - National ID (CMND/CCCD): r"\b\d{9}\b|\b\d{12}\b"
-        # - API key pattern: r"sk-[a-zA-Z0-9-]+"
-        # - Password pattern: r"password\s*[:=]\s*\S+"
-    }
-
     for name, pattern in PII_PATTERNS.items():
-        matches = re.findall(pattern, response, re.IGNORECASE)
+        matches = re.findall(pattern, redacted, re.IGNORECASE)
         if matches:
             issues.append(f"{name}: {len(matches)} found")
             redacted = re.sub(pattern, "[REDACTED]", redacted, flags=re.IGNORECASE)
@@ -169,19 +170,37 @@ class OutputGuardrailPlugin(base_plugin.BasePlugin):
         self.total_count += 1
 
         response_text = self._extract_text(llm_response)
-        if not response_text:
+        with trace_span("output_guardrail", input_chars=len(response_text),
+                        input_text=response_text) as run:
+            if not response_text:
+                record_decision(run, decision="ALLOW", layer=self.name)
+                return llm_response
+
+            filtered = content_filter(response_text)
+            safe_text = filtered["redacted"]
+            issue_types = [issue.split(":", 1)[0] for issue in filtered["issues"]]
+            blocked_by_judge = False
+            if not filtered["safe"]:
+                self.redacted_count += 1
+
+            if self.use_llm_judge:
+                verdict = await llm_safety_check(response_text)
+                if not verdict["safe"]:
+                    self.blocked_count += 1
+                    blocked_by_judge = True
+                    safe_text = "This response cannot be shared safely."
+                    record_decision(run, decision="BLOCK", layer=self.name, reason="llm_judge",
+                                    issues=issue_types, output_text=safe_text)
+
+            if safe_text != response_text:
+                llm_response.content = types.Content(
+                    role=llm_response.content.role or "model",
+                    parts=[types.Part.from_text(text=safe_text)],
+                )
+            if not blocked_by_judge:
+                record_decision(run, decision="REDACT" if issue_types else "ALLOW",
+                                layer=self.name, issues=issue_types, output_text=safe_text)
             return llm_response
-
-        # TODO: Implement logic:
-        # 1. Call content_filter(response_text)
-        #    - If issues found: replace llm_response.content with redacted version
-        #    - Increment self.redacted_count
-        # 2. If use_llm_judge: call llm_safety_check(response_text)
-        #    - If unsafe: replace llm_response.content with a safe message
-        #    - Increment self.blocked_count
-        # 3. Return llm_response (possibly modified)
-
-        return llm_response  # TODO: modify if needed
 
 
 # ============================================================

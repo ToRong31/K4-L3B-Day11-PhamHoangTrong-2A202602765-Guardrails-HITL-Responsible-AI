@@ -29,6 +29,7 @@ from agents.security_boundary import (
 )
 from core.config import ALLOWED_TOPICS, BLOCKED_TOPICS, DEMO_SECRETS, DEMO_SECRET_NOTE
 from core.utils import chat_with_agent
+from core.tracing import record_decision, trace_span
 
 # Secrets embedded in the Red Advance system prompt
 # (same values as Blue + Red).
@@ -187,17 +188,21 @@ class GuardsInputPlugin(base_plugin.BasePlugin):
     ) -> types.Content | None:
         self.total_count += 1
         text = self._text(user_message)
-        if detect_injection_strong(text):
-            self.blocked_count += 1
-            return self._block(
-                "I cannot process that request. I only help with VinBank banking questions."
-            )
-        if topic_filter_strong(text):
-            self.blocked_count += 1
-            return self._block(
-                "I'm a VinBank assistant and can only help with banking-related questions."
-            )
-        return None
+        with trace_span("red_advance_input", input_chars=len(text), input_text=text) as run:
+            if detect_injection_strong(text):
+                self.blocked_count += 1
+                message = "I cannot process that request. I only help with VinBank banking questions."
+                record_decision(run, decision="BLOCK", layer=self.name,
+                                reason="prompt_injection", output_text=message)
+                return self._block(message)
+            if topic_filter_strong(text):
+                self.blocked_count += 1
+                message = "I'm a VinBank assistant and can only help with banking-related questions."
+                record_decision(run, decision="BLOCK", layer=self.name,
+                                reason="topic_filter", output_text=message)
+                return self._block(message)
+            record_decision(run, decision="ALLOW", layer=self.name)
+            return None
 
 
 class GuardsOutputPlugin(base_plugin.BasePlugin):
@@ -217,22 +222,29 @@ class GuardsOutputPlugin(base_plugin.BasePlugin):
     async def after_model_callback(self, *, callback_context, llm_response):
         self.total_count += 1
         text = self._text(llm_response)
-        if not text:
-            return llm_response
+        with trace_span("red_advance_output", input_chars=len(text), input_text=text) as run:
+            if not text:
+                record_decision(run, decision="ALLOW", layer=self.name)
+                return llm_response
 
-        filtered = content_filter_strong(text)
-        if not filtered["safe"]:
-            self.redacted_count += 1
-            # If secrets were present, replace entire reply (hard fail-closed)
-            safe_msg = (
-                "I cannot share internal system details. "
-                "How else can I help with your VinBank account or banking needs?"
-            )
-            self.blocked_count += 1
-            llm_response.content = types.Content(
-                role="model", parts=[types.Part.from_text(text=safe_msg)]
-            )
-        return llm_response
+            filtered = content_filter_strong(text)
+            if not filtered["safe"]:
+                self.redacted_count += 1
+                # If secrets were present, replace entire reply (hard fail-closed)
+                safe_msg = (
+                    "I cannot share internal system details. "
+                    "How else can I help with your VinBank account or banking needs?"
+                )
+                self.blocked_count += 1
+                llm_response.content = types.Content(
+                    role="model", parts=[types.Part.from_text(text=safe_msg)]
+                )
+                record_decision(run, decision="BLOCK", layer=self.name,
+                                issues=filtered["issues"], output_text=safe_msg)
+            else:
+                record_decision(run, decision="ALLOW", layer=self.name,
+                                output_text=text)
+            return llm_response
 
 
 def create_red_agent_advance():

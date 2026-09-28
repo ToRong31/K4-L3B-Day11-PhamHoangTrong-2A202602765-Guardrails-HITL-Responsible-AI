@@ -133,4 +133,27 @@ pip install -r requirements.txt
 Điền `.env`: `OPENROUTER_API_KEY` + `RED_TEAM_PROVIDER=openai|gemini` (và key tương ứng).  
 Rồi mở [`CHECKPOINTS.md`](CHECKPOINTS.md) và làm lần lượt Checkpoint 1 → 5.
 
+### Xem tầng guardrail trong LangSmith (tuỳ chọn)
+
+Thêm vào `.env` local (không commit):
+
+```dotenv
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=lsv2_...
+LANGSMITH_PROJECT=vinbank-guardrails-lab
+```
+
+Mở đúng project có tên bằng `LANGSMITH_PROJECT` trong LangSmith. Chạy `python src/main.py --part 2` để xem các callback guardrail, `--part 3` để xem request Blue hoàn chỉnh, hoặc `--part 4` để so Red với Red Advance.
+
+```text
+Blue (CP3): request -> rate_limiter -> input_guardrail -> model_call -> output_guardrail -> reply
+                     \-> audit_log / metrics (ghi nhận, không chặn)
+Red (CP4):  attack -> red_default_request -> model_call -> attack_classifier
+             \-----> red_advance_request -> input/model/output guard -> attack_classifier
+```
+
+Trong một trace, mở run gốc (`blue_request`, `red_default_attack`, `red_advance_attack`), xem `input_preview` và `output_preview`, rồi xem `decision` và `layer` ở Output. Span con cho biết bước nào chạy và `reason` nếu chặn. `model_refuse` là model tự từ chối; `input_guardrail`, `rate_limiter` và `output_guardrail` là Blue plugin. Với Red Advance, `red_advance_input` / `red_advance_output` là guardrail của target. Kết quả trên `*_attack` là phân loại sau khi nhận response (`layer_source=attack_classifier`), nên mở span con để xác nhận tầng thực tế.
+
+Preview dài tối đa 500 ký tự và che PII/secret demo trước khi gửi LangSmith. Tắt bằng `LANGSMITH_TRACING=false`. Nếu không thấy trace, kiểm tra `LANGSMITH_PROJECT` trong `.env` và chạy lại lệnh; trace cũ không tự có các trường preview mới.
+
 Nộp theo [`SUBMISSION.md`](SUBMISSION.md) · Quy định: [`RULES.md`](RULES.md).
