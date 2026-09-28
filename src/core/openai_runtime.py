@@ -91,9 +91,11 @@ class OpenAIRunner:
 
     async def chat(self, agent: OpenAIAgent, user_message: str, *,
                    user_id: str = "student", with_decision: bool = False):
-        def finish(response: str, *, decision: str, layer: str | None = None):
+        def finish(response: str, *, decision: str, layer: str | None = None,
+                   model_demo_secret_leaked: bool | None = None):
             result = {"response": response, "decision": decision, "layer": layer,
-                      "blocked": decision == "BLOCK"}
+                      "blocked": decision == "BLOCK",
+                      "model_demo_secret_leaked": model_demo_secret_leaked}
             return result if with_decision else response
 
         target = ("blue" if self.provider == "openrouter" else
@@ -119,6 +121,14 @@ class OpenAIRunner:
                                 output_text=block_msg)
                 return finish(block_msg, decision="BLOCK", layer=blocked_at)
 
+            if self.provider == "openrouter":
+                from guardrails.input_guardrails import greeting_response
+                greeting = greeting_response(user_message)
+                if greeting is not None:
+                    record_decision(run, decision="ALLOW", layer="greeting_router",
+                                    output_text=greeting)
+                    return finish(greeting, decision="ALLOW", layer="greeting_router")
+
             with trace_span("model_call", input_chars=len(user_message),
                             input_text=user_message,
                             metadata={"agent": target, "model": self.model}) as model_run:
@@ -135,6 +145,11 @@ class OpenAIRunner:
                 response = (completion.choices[0].message.content or "").strip()
                 record_decision(model_run, decision="GENERATED", layer="model",
                                 output_text=response)
+
+            model_demo_secret_leaked = None
+            if target == "blue":
+                from agents.guards_agent import check_secret_leak
+                model_demo_secret_leaked = check_secret_leak(response)
 
             hook_layer = None
             for hook in self.output_hooks:
@@ -154,7 +169,8 @@ class OpenAIRunner:
             final_layer = output_layer or hook_layer
             record_decision(run, decision=final_decision, layer=final_layer,
                             output_text=response)
-            return finish(response, decision=final_decision, layer=final_layer)
+            return finish(response, decision=final_decision, layer=final_layer,
+                          model_demo_secret_leaked=model_demo_secret_leaked)
 
     async def _run_input_plugins(self, user_message: str, *, user_id: str = "student") -> tuple[str | None, str | None]:
         if not self.plugins:

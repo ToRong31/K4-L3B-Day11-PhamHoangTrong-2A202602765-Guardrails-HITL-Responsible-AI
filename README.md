@@ -111,6 +111,16 @@ Thứ tự làm: **Setup → Blue (phòng thủ) → Red (tấn công) → nộp
 
 ## 3. Cách bắt đầu
 
+### Giao diện kiểm thử cục bộ
+
+Sau khi cài dependencies và điền `.env`, chạy từ gốc repo:
+
+```powershell
+python src/ui_server.py
+```
+
+Mở `http://127.0.0.1:8765` trong trình duyệt. Giao diện cho phép thử prompt với Blue, Red và Red Advance; xem quyết định `ALLOW`/`BLOCK`/`REDACT` và lớp xử lý; chạy Part 2–4 với log trực tiếp; xem các JSON đã tạo trong `outputs/`. Máy chủ chỉ lắng nghe trên `127.0.0.1`. Dừng bằng `Ctrl+C`. Các prompt được cho qua input guardrail sẽ gọi API model và có thể chịu giới hạn hoặc chi phí của provider.
+
 **Windows (PowerShell):**
 
 ```powershell

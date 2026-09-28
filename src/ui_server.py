@@ -87,6 +87,7 @@ class DashboardState:
             response = result["response"]
             decision = result["decision"]
             layer = result["layer"]
+            model_demo_secret_leaked = result.get("model_demo_secret_leaked")
         else:
             response, _ = asyncio.run(chat_with_agent(agent, runner, prompt))
             from attacks.attacks import classify_attack_outcome
@@ -94,10 +95,12 @@ class DashboardState:
                 target_name="red_advance" if target == "red_advance" else "red_default")
             decision = "BLOCK" if outcome["blocked"] else "ALLOW"
             layer = outcome["layer"]
+            model_demo_secret_leaked = None
         leaked = check_secret_leak(response)
         if leaked:
             decision = "LEAK"
-        stages = describe_stages(target, prompt, decision, layer, exact)
+        stages = describe_stages(target, prompt, decision, layer, exact,
+                                 model_demo_secret_leaked)
         return {
             "target": target,
             "model": get_blue_model() if target == "blue" else get_red_model(),
@@ -169,8 +172,18 @@ class DashboardState:
 
 
 def describe_stages(target: str, prompt: str, decision: str,
-                    layer: str | None, exact: bool) -> list[dict]:
+                    layer: str | None, exact: bool,
+                    model_demo_secret_leaked: bool | None = None) -> list[dict]:
     """Summarize runtime checkpoints; never claim unobserved stages ran."""
+    if target == "blue" and layer == "greeting_router":
+        return [
+            {"name": "Rate limiter", "status": "pass", "detail": "Chưa vượt giới hạn."},
+            {"name": "Input guardrail", "status": "pass", "detail": "Lời chào ngắn được cho qua."},
+            {"name": "Greeting router", "status": "done", "detail": "Trả lời bằng mẫu chào hỏi cục bộ."},
+            {"name": "Model", "status": "skip", "detail": "Không gọi OpenRouter cho lời chào."},
+            {"name": "System instruction", "status": "skip", "detail": "Không gọi model nên không đánh giá quy tắc này."},
+            {"name": "Output guardrail", "status": "skip", "detail": "Phản hồi cố định an toàn."},
+        ]
     if target == "red":
         return [
             {"name": "Input guardrail", "status": "off", "detail": "Red thường không gắn guardrail."},
@@ -200,6 +213,20 @@ def describe_stages(target: str, prompt: str, decision: str,
                    "Chưa chạy." if layer == "rate_limiter" else "Prompt được cho qua."}
     model_stage = {"name": "Model", "status": "skip" if input_layer else "done",
                    "detail": "Không gọi model vì đã chặn đầu vào." if input_layer else "Model đã tạo phản hồi."}
+    system_stage = None
+    if target == "blue":
+        if input_layer:
+            system_stage = {"name": "System instruction", "status": "skip",
+                            "detail": "Không gọi model nên không đánh giá quy tắc này."}
+        elif model_demo_secret_leaked is True:
+            system_stage = {"name": "System instruction", "status": "leak",
+                            "detail": "Phản hồi gốc của model chứa secret demo; kiểm tra này chạy trước output guardrail."}
+        elif model_demo_secret_leaked is False:
+            system_stage = {"name": "System instruction", "status": "observed",
+                            "detail": "Không thấy secret demo trong phản hồi gốc; chưa chứng minh model tuân thủ mọi quy tắc."}
+        else:
+            system_stage = {"name": "System instruction", "status": "unverified",
+                            "detail": "Không có tín hiệu từ phản hồi gốc để đánh giá quy tắc này."}
     output_stage = {"name": "Output guardrail",
                     "status": "skip" if input_layer else
                               "redact" if decision == "REDACT" else
@@ -208,7 +235,7 @@ def describe_stages(target: str, prompt: str, decision: str,
                               "Đã sửa nội dung nhạy cảm." if decision == "REDACT" else
                               "Đã chặn phản hồi." if output_layer and decision == "BLOCK" else
                               "Không phát hiện vấn đề ở đầu ra."}
-    stages = [rate, input_stage, model_stage, output_stage] if rate else [input_stage, model_stage, output_stage]
+    stages = [rate, input_stage, model_stage, system_stage, output_stage] if rate else [input_stage, model_stage, output_stage]
     if not exact:
         for stage in stages:
             stage["detail"] += " (ước lượng từ phản hồi)"
@@ -335,7 +362,8 @@ class Handler(BaseHTTPRequestHandler):
                 part = data.get("part")
                 if type(part) is not int or part not in {2, 3, 4}:
                     raise ValueError("Chọn Part 2, 3 hoặc 4.")
-                key_error = STATE.key_error("blue") if part in {3, 4} else None
+                # main.py checks the Blue key before every Part, including Part 2.
+                key_error = STATE.key_error("blue")
                 if part == 4:
                     key_error = key_error or STATE.key_error("red")
                 if key_error:
@@ -350,7 +378,15 @@ class Handler(BaseHTTPRequestHandler):
         except RuntimeError as exc:
             self.respond(409, {"error": str(exc)})
         except Exception as exc:
-            self.respond(500, {"error": f"{type(exc).__name__}: {exc}"})
+            from openai import NotFoundError, RateLimitError
+            if isinstance(exc, RateLimitError):
+                self.respond(429, {"error": "Nhà cung cấp đang giới hạn lượt gọi. "
+                            "Chờ rồi thử lại; câu bị chặn trước model vẫn có thể thử ngay."})
+            elif isinstance(exc, NotFoundError):
+                self.respond(502, {"error": "Không tìm thấy endpoint phù hợp. "
+                            "Kiểm tra model và chính sách Privacy/ZDR của tài khoản provider."})
+            else:
+                self.respond(500, {"error": f"{type(exc).__name__}: {exc}"})
 
 
 def main() -> None:

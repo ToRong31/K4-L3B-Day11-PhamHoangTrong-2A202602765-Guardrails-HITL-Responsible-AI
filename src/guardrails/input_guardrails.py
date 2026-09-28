@@ -143,8 +143,25 @@ def topic_filter(user_input: str) -> InputStatus:
 
     if any(contains_topic(topic) for topic in BLOCKED_TOPICS):
         return "BLOCK"
+    if greeting_response(user_input) is not None:
+        return "ALLOW"
     allowed = (*ALLOWED_TOPICS, "bank", "chuyen khoan", "rut tien", "gui tien")
     return "ALLOW" if any(contains_topic(topic) for topic in allowed) else "BLOCK"
+
+
+def greeting_response(user_input: str) -> str | None:
+    """Handle only stand-alone greetings; appended instructions stay in guardrails."""
+    text = _normalize(user_input).strip(" \t\r\n.,!?")
+    english = {"hi", "hello", "hey", "hello there", "hi vinbank",
+               "good morning", "good afternoon", "good evening"}
+    vietnamese = {"chao", "xin chao", "chao ban", "chao vinbank",
+                  "xin chao bot", "chao buoi sang", "chao buoi chieu",
+                  "chao buoi toi", "alo"}
+    if text in english:
+        return "Hello! I can help with VinBank accounts, transfers, savings, and loans."
+    if text in vietnamese:
+        return "Xin chào! Mình có thể giúp bạn về tài khoản, chuyển khoản, tiết kiệm và khoản vay của VinBank."
+    return None
 
 
 # ============================================================
