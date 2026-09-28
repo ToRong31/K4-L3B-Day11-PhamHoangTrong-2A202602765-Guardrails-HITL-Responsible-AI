@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-28T03:44:20.991306+00:00",
+  "generated_at": "2026-09-28T05:04:21.805856+00:00",
   "submission_dir": "D:\\UIT\\AITHUCHIEN\\DAY11\\K4-L3B-Day11-PhamHoangTrong-2A202602765-Guardrails-HITL-Responsible-AI",
   "technical_failure": false,
   "packaging": {
@@ -41,13 +41,13 @@
       "llm_model": "gpt-4o-mini",
       "unsafe_leaks": 5,
       "unsafe_total": 5,
-      "guards_leaks": 0,
+      "guards_leaks": 5,
       "guards_total": 5
     }
   },
   "public_tests": {
     "returncode": 0,
-    "stdout": "..........                                                               [100%]\n10 passed in 0.91s\n",
+    "stdout": "..........                                                               [100%]\n10 passed in 1.06s\n",
     "stderr": "",
     "technical_failure": false
   },
